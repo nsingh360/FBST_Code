@@ -1,0 +1,205 @@
+clear
+clc
+close all
+
+%% set random number generator seed
+seed = randi([1,10000]);
+rng(seed)
+
+B = 2^6; % beams are 2*B+1
+M = 2^7; % array size
+N = 2^(11); % no. of samples
+MN = M*N;
+
+% source beam selection
+Theta = asin(linspace(-B,B,2*B+1)/B);
+beam_idx = 121;
+
+fc = 20e9;  % center frequency
+Ws = 5e9; % to prevent spacial aliasing
+c = physconst('LightSpeed');
+lambda = c/(fc+Ws); % wavelngth
+eta = lambda/(2*c);
+W = 5e9; % bandwidth
+fs = 2*W; % sampling frequency
+T = 1/fs;
+theta = Theta(beam_idx);%Theta(idx);
+m = [(-M/2+1/2):(M/2-1/2)]';
+x_pos = m*lambda/2; % sensor positions
+u_s = sin(theta); % normal vector for determining delays
+
+N_pad = 2*N; % zero pad input
+
+freq_resolution = fs/N;
+freq_resolution2 = fs/N_pad;
+
+%% Signal specs that do not need to be redifined in loop
+n_sinusoids = 100; % number of sinusoids in signal
+n = [0:N-1]/fs; % temporal sample vectors
+tau = x_pos*u_s/c; % relative delays to phase center
+t_array = n-tau; % delays across array and time
+t = t_array(:); %
+T_aperture = max(t)-min(t);% temporal aperture of the array
+demod_phase = repmat(exp(-1i*2*pi*(fc)*tau),N,1);
+mod_phase = exp(1i*2*pi*(fc)*tau);
+
+
+% %% slepian function for signal generation
+% K = ceil(2*W*T_aperture)+10;% subspace dimension
+% [V_u,Lambda] = dpss(MN+1,W*T_aperture,K); % firt K uniformly sampled PSWF's
+% t_u = [0:(MN)]'; % uniform sampling points over the interval
+% t_nu = [M*N*(t-min(t(:)))/T_aperture]; % non-uniform sample points, scaled to match interval
+% V_nu = interp1(t_u,V_u,t_nu,'pchip',0); % non-uniform
+% % Lambda = svd(V_nu);
+
+%% equispaced sampled basis matrix
+t_nyq = [0:N-1]/fs; % nyquist samples for testing
+% V_nyq = interp1(t_u,V_u,MN*(t_nyq-min(t))/T_aperture,'pchip',0); % interpolate to nyquist
+
+
+
+%% simulation specifications
+trials = 25;
+SNRs = -30:6:30;
+SNR_subband = zeros(trials,length(SNRs));
+SNR_subbband_pad = zeros(trials, length(SNRs));
+
+for ii = 1:trials
+    for jj = 1:length(SNRs)
+
+        SNR_dB = SNRs(jj); % signal to noise ratio
+        a = (randn(n_sinusoids,1) + 1i*randn(n_sinusoids,1))/sqrt(2); % sinusoid amplitudes
+        f = linspace(-W,W,n_sinusoids); % sinusoid frequencies
+        s = sig_gen(a,f,n_sinusoids,t);
+        sigma = (norm(s)/sqrt(MN))*10^(-SNR_dB/20);
+        noise = sigma*(randn(MN,1)+1i*randn(MN,1))/sqrt(2);
+        SNR_check = db(norm(s)/norm(noise));
+        fprintf('Trial: %d, Set SNR: %.2f, Measured SNR: %.2f\n',ii,SNR_dB,SNR_check)
+
+        s_demod = s.*demod_phase + noise;
+
+        y = s_demod;
+        y = reshape(y, [M,N]);
+
+        % subband FFT across array elements 
+        Y_f = fft(y.'); % mth column for mth array sample
+
+        Y_nb = zeros(N,1);
+        f_set = zeros(N,1);
+
+
+        Y_freq_beamspace = zeros(N,2*B+1);
+        beam_list = linspace(0,2*B,2*B+1);
+
+        for nn=0:N-1
+            ym = Y_f(nn+1,:).';
+            if nn<N/2
+                f_curr = fc + nn*freq_resolution;
+            elseif nn>=N/2
+                f_curr = fc + (nn)*freq_resolution - N*freq_resolution;
+            end
+            W_czt = exp(1i*pi*f_curr/((fc+W)*B));
+            A_czt = exp(1i*pi*f_curr/(fc+W));
+            coeff2 = exp(1i*pi*f_curr*(M/2-1/2)/(fc+W));
+            coeff1 = exp(-1i*pi*f_curr*((M/2-1/2)/(fc+W))*(beam_list/B)).';
+            temp_var = czt(ym,2*B+1,W_czt,A_czt);
+            Y_freq_beamspace(nn+1,:) = coeff2*temp_var.*coeff1;
+        end
+
+        Y_time_beamspace = ifft(Y_freq_beamspace);
+        Y_bf = Y_time_beamspace(:,beam_idx)/M; % 
+
+        % for nn=0:N-1
+        %     ym = Y_f(nn+1,:).';
+        %     if nn<N/2
+        %         f_curr = fc + nn*freq_resolution;
+        %     elseif nn>=N/2
+        %         f_curr = fc + (nn)*freq_resolution - N*freq_resolution;
+        %     end
+        %     w_vec = exp(-1i*2*pi*f_curr*tau)/M;
+        %     Y_nb(nn+1) = w_vec'*ym;
+        %     f_set(nn+1) = f_curr;
+        % end
+
+        % Y_bf = ifft(Y_nb);
+
+
+        % Padded sub-band FFT
+        Y_f2 = fft(y.',N_pad);
+        Y_nb2 = zeros(N_pad,1);
+        f_set2 = zeros(N_pad,1);
+
+        for nn=0:N_pad-1
+            ym = Y_f2(nn+1,:).';
+            if nn<N_pad/2
+                f_curr = fc + nn*freq_resolution2;
+            elseif nn>=N_pad/2
+                f_curr = fc + (nn)*freq_resolution2 - N_pad*freq_resolution2;
+            end
+            w_vec = exp(-1i*2*pi*f_curr*tau)/M;
+            Y_nb2(nn+1) = w_vec'*ym;
+            f_set2(nn+1) = f_curr;
+        end
+
+        Y_bf2 = ifft(Y_nb2);
+        Y_bf2 = Y_bf2(1:N);
+
+        % % FFT across time
+        % Y_f = fftshift(fft(y.', N, 1), 1);
+        % 
+        % f_bins = (-N/2:N/2-1).' * freq_resolution + fc;
+        % 
+        % Y_nb = zeros(N,1);
+        % 
+        % for k = 1:N
+        %     w = exp(-1j*2*pi*f_bins(k)*tau) / M;
+        %     Y_nb(k) = w' * Y_f(k,:).';
+        % end
+        % 
+        % Y_bf = ifft(ifftshift(Y_nb));
+
+
+        s_nyq = sig_gen(a,f,n_sinusoids,t_nyq.');
+
+        SNR_subband(ii,jj) = norm(s_nyq)/norm(Y_bf - s_nyq);
+        SNR_subbband_pad(ii,jj) = norm(s_nyq)/norm(Y_bf2 - s_nyq);
+        
+
+    end
+end
+
+figure(1);
+plot(SNRs,db(M)/2 + SNRs);
+hold on
+grid on
+plot(SNRs, db(mean(SNR_subband)));
+hold on
+grid on
+plot(SNRs,db(mean(SNR_subbband_pad)));
+legend({'Ideal','DFT beamformer','DFT beamformer (zero-padded)'});
+
+save('SNR_subband_N256.mat','SNR_subband');
+
+%% supporting functions
+function [X] = sig_gen(a,f,n_sinusoids,t)
+X = zeros(size(t));
+for ii = 1:n_sinusoids % For each antenna
+    sig = (a(ii)*exp(1i*2*pi*(f(ii))*(t)));
+    X = X + sig;
+end
+end
+
+function y = Psi_b3(z)
+y = (z.^3/6 + z.^2 + 2*z + 4/3).*(-2<=z).*(z<-1);
+y = y + (-z.^3/2-z.^2 + 2/3).*(-1<=z).*(z<0);
+y = y + (z.^3/2 - z.^2 + 2/3).*(0<=z).*(z<1);
+y = y + (-z.^3/6 + z.^2 - 2*z + 4/3).*(1<=z).*(z<2);
+end
+
+function y = Psi_sinc(z)
+y = sinc(z);
+end
+
+function [X] = slepian_sig_gen(V,a,n_slepians,t)
+X = sum(a*V.').';
+end

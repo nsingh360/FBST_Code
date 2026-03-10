@@ -1,0 +1,194 @@
+clear
+clc
+close all
+
+%% set random number generator seed
+seed = randi([1,10000]);
+rng(seed)
+
+B = 2^7; % no. of beams
+M = 2^7; % array size
+N = 2^6; % no. of samples
+L = ceil(N); % no. of samples in frequency is 2*L
+MN = M*N;
+
+Theta_fbst = zeros(2*B+1,1);
+idx1 = 239;%randi(B,1);
+idx2 = 240;
+for i=1:2*B+1
+    Theta_fbst(i) = asin((i-1-B)/B);
+end
+
+fc = 20e9;  % center frequency
+Ws = 5e9; % to prevent spatial aliasing
+c = physconst('LightSpeed');
+fc_tilde = (fc+Ws); % adjustment for spatial aliasing
+fc_norm = fc/fc_tilde;
+lambda = c/(fc+Ws); % wavelngth
+eta = lambda/(2*c);
+W = 5e9; % bandwidth
+fs = 2*W; % sampling frequency
+T = 1/fs;
+theta = pi/3;%Theta(idx); 
+m = [(-M/2+1/2):(M/2-1/2)]';
+x_pos = m*lambda/2; % sensor positions
+u_s = sin(theta); % normal vector for determining delays
+
+%% Signal specs that do not need to be redifined in loop
+n_sinusoids = 100; % number of sinusoids in signal
+n = [0:N-1]/fs; % temporal sample vectors
+tau = x_pos*u_s/c; % relative delays to phase center
+t_array = n-tau; % delays across array and time
+t = t_array(:); %
+T_aperture = max(t)-min(t);% temporal aperture of the array
+demod_phase = repmat(exp(-1i*2*pi*fc*tau),N,1);%exp(1i*2*pi*fc*t);
+
+%% construct basis matrix (for true beam)
+frequency_samples = (1/(2*T*L))*linspace(-L,L-1,2*L);
+F_source = exp(1i*2*pi*t*frequency_samples);
+F_check = F_source;
+% F_source = F_source.*demod_phase;
+toep_inv = inv(F_source'*F_source + 1e-5*eye(2*L));
+beta_true_fbst = toep_inv*F_source';
+
+%% equispaced sampled basis matrix
+t_nyq = [0:N-1]/fs; % nyquist samples for testing
+psi = exp(1i*2*pi*t_nyq'*frequency_samples);
+
+%% compute beampattern
+f_beam = linspace(fc-0.5*W,fc+0.5*W,25);
+theta_beam = linspace(-pi/2,pi/2,300);
+theta_beam_zoomed = linspace(theta - 0.1,theta + 0.1, 1000);
+
+beam_pattern_true_fbst = zeros(length(f_beam),length(theta_beam));
+beam_pattern_interpolated_fbst = zeros(length(f_beam), length(theta_beam));
+beam_pattern_interpolators_fbst = zeros(8,length(f_beam),length(theta_beam));
+
+beam_pattern_true_fbst_zoomed = zeros(length(f_beam),length(theta_beam_zoomed));
+beam_pattern_interpolated_fbst_zoomed = zeros(length(f_beam),length(theta_beam_zoomed));
+beam_pattern_interpolators_fbst_zoomed = zeros(8,length(f_beam),length(theta_beam_zoomed));
+
+e_mod = exp(-1i*2*pi*fc*t);
+
+for ii = 1:length(f_beam)
+    % for jj = 1:length(theta_beam)
+    %     fprintf('Frequency: %.2f, Angle: %.2f\n',f_beam(ii),theta_beam(jj));
+    %     tau_jj = x_pos*sin(theta_beam(jj))/c;
+    %     t_jj = n-tau_jj;
+    %     t_jj =t_jj(:);
+    %     % e_mod  = repmat(exp(-1i*2*pi*(fc)*(tau_jj)),N,1);
+    %     e_jj = exp(1i*2*pi*(f_beam(ii))*t_jj).*e_mod;
+    %     beam_pattern_true_fbst(ii,jj) = norm(psi*(beta_true_fbst*e_jj))/sqrt(length(t_nyq));
+    % 
+    %     y = e_jj.*demod_phase; % for interpolation using chirp-z
+    %     y_array = reshape(y, [M,N]);
+    % 
+    %     %--- chirp-z transform
+    %     F_transform = zeros(M,2*L);
+    %     A = -1;%exp(-1i*2*pi*T*W);
+    %     W_czt = exp(-1i*pi/L);
+    %     for mm=1:M
+    %         F_transform(mm,:) = czt(y_array(mm,:).',2*L,W_czt,A);
+    %     end
+    %     X_czt = zeros(2*L,2*B+1);
+    %     A= 1;
+    %     B_list = reshape(linspace(0,2*B,2*B+1), [1,2*B+1]);
+    %     for ll=1:2*L
+    %         l_dash = ll-1;
+    %         A = exp(1i*pi*(1/B)*(fc_norm + (1/(2*fc_tilde*T*L))*(l_dash-L))*B);
+    %         W_czt = exp(1i*pi*(1/B)*(fc_norm + (1/(2*fc_tilde*T*L))*(l_dash-L)));
+    %         coeff1 = exp(-1i*pi*(1/B)*(fc_norm + (1/(2*fc_tilde*T*L))*(l_dash-L))*(M/2-1/2)*B_list); % adjusting for array center
+    %         coeff2 = exp(1i*pi*(1/B)*(fc_norm + (1/(2*fc_tilde*T*L))*(l_dash-L))*(M/2-1/2)*B); % adjusting for negative angles
+    %         X_czt(ll,:) = czt(F_transform(:,ll),2*B+1,W_czt,A);
+    %         X_czt(ll,:) = coeff2*X_czt(ll,:).*coeff1;
+    %     end
+    %     w_l_interp = interp1(Theta_fbst(idx1-3:idx2+3),X_czt(:,idx1-3:idx2+3).',theta,'spline').';
+    %     beta_interp_fbst = toep_inv*w_l_interp;
+    % 
+    %     beam_pattern_interpolated_fbst(ii,jj) = norm(psi*(beta_interp_fbst))/sqrt(length(t_nyq));
+    % 
+    %     w_l_interping_beams = X_czt(:,idx1-3:idx2+3);
+    %     beta_interp_beams = toep_inv*w_l_interping_beams;
+    %     beam_pattern_interpolators_fbst(:,ii,jj) = vecnorm(psi*beta_interp_beams)./sqrt(length(t_nyq));
+    % end
+
+    % ---------- zoomed angles
+    for jj = 1:length(theta_beam_zoomed)
+        fprintf('Frequency: %.2f, Zoomed-Angle: %.2f\n',f_beam(ii),theta_beam_zoomed(jj));
+        tau_jj = x_pos*sin(theta_beam_zoomed(jj))/c;
+        t_jj = n-tau_jj;
+        t_jj =t_jj(:);
+        % e_mod  = repmat(exp(-1i*2*pi*(fc)*(tau_jj)),N,1);
+        e_jj = exp(1i*2*pi*(f_beam(ii))*t_jj).*e_mod;
+        beam_pattern_true_fbst_zoomed(ii,jj) = norm(psi*(beta_true_fbst*e_jj))/sqrt(length(t_nyq));
+
+        y = e_jj.*demod_phase; % for interpolation using chirp-z
+        y_array = reshape(y, [M,N]);
+
+        %--- chirp-z transform
+        F_transform = zeros(M,2*L);
+        A = -1;%exp(-1i*2*pi*T*W);
+        W_czt = exp(-1i*pi/L);
+        for mm=1:M
+            F_transform(mm,:) = czt(y_array(mm,:).',2*L,W_czt,A);
+        end
+        X_czt = zeros(2*L,2*B+1);
+        A= 1;
+        B_list = reshape(linspace(0,2*B,2*B+1), [1,2*B+1]);
+        for ll=1:2*L
+            l_dash = ll-1;
+            A = exp(1i*pi*(1/B)*(fc_norm + (1/(2*fc_tilde*T*L))*(l_dash-L))*B);
+            W_czt = exp(1i*pi*(1/B)*(fc_norm + (1/(2*fc_tilde*T*L))*(l_dash-L)));
+            coeff1 = exp(-1i*pi*(1/B)*(fc_norm + (1/(2*fc_tilde*T*L))*(l_dash-L))*(M/2-1/2)*B_list); % adjusting for array center
+            coeff2 = exp(1i*pi*(1/B)*(fc_norm + (1/(2*fc_tilde*T*L))*(l_dash-L))*(M/2-1/2)*B); % adjusting for negative angles
+            X_czt(ll,:) = czt(F_transform(:,ll),2*B+1,W_czt,A);
+            X_czt(ll,:) = coeff2*X_czt(ll,:).*coeff1;
+        end
+        w_l_interp = interp1(Theta_fbst(idx1-3:idx2+3),X_czt(:,idx1-3:idx2+3).',theta,'spline').';
+        beta_interp_fbst = toep_inv*w_l_interp;
+
+        beam_pattern_interpolated_fbst_zoomed(ii,jj) = norm(psi*(beta_interp_fbst))/sqrt(length(t_nyq));
+        w_l_interping_beams = X_czt(:,idx1-3:idx2+3);
+        beta_interp_beams = toep_inv*w_l_interping_beams;
+        beam_pattern_interpolators_fbst_zoomed(:,ii,jj) = vecnorm(psi*beta_interp_beams)./sqrt(length(t_nyq));
+
+    end
+end
+
+figure(1)
+p0 = plot(rad2deg(theta_beam_zoomed),zeros(length(theta_beam_zoomed),1),'r--');
+hold on
+grid on
+p1 = plot(rad2deg(theta_beam_zoomed),db(beam_pattern_true_fbst_zoomed),'Color',[0 0 0 1],'LineWidth',2);
+hold on
+grid on
+p2 = plot(rad2deg(theta_beam_zoomed), db(beam_pattern_interpolated_fbst_zoomed),'Color',[0 1 0 0.5]);
+for ii=1:8
+    hold on
+    grid on
+    p3 = plot(rad2deg(theta_beam_zoomed), db(squeeze(beam_pattern_interpolators_fbst_zoomed(ii,:,:))),'Color',[0 0 1 0.1]);
+end
+xlabel('$\theta$ (degrees)','Interpreter','latex','FontSize',12)
+ylabel('Response(dB)','Interpreter','latex','FontSize',12)
+xlim([rad2deg(theta- 0.1),rad2deg(theta+0.1)])
+legend_p0 = plot(-1, -1, 'r--', 'LineWidth', 2);  % Solid red
+legend_p1 = plot(-1, -1, 'k-', 'LineWidth', 2); % Dashed blue
+legend_p2 = plot(-1, -1, 'g-', 'LineWidth', 2); % Dashed blue
+legend_p3 = plot(-1, -1, 'b-', 'LineWidth', 2); % Dashed blue
+% Legend
+legend([legend_p0, legend_p1, legend_p2, legend_p3], {'Distortionless response', 'True beam', 'Interpolated beam', 'Interpolating beams'},'location','southeast','Interpreter','latex','FontSize',12);
+y1 = ylim;
+ylim([-30, 1.5]);
+% exportgraphics(gcf, 'super_res_ula_beam_pattern.pdf', 'ContentType', 'vector')
+% legend({'Distortionless response','No Nulling', 'Projection Nulling'},'location','northwest','Interpreter','latex')
+
+% First Inset
+ax1 = axes('Position', [0.28, 0.14, 0.2, 0.2]); % [x, y, width, height]
+box on;
+plot(rad2deg(theta_beam_zoomed(495:505)),zeros(length(theta_beam_zoomed(495:505)),1),'r--');
+hold on;
+plot(rad2deg(theta_beam_zoomed(495:505)), db(beam_pattern_true_fbst_zoomed(:,495:505)), 'Color',[0 0 0 1], 'LineWidth', 1);
+hold on
+plot(rad2deg(theta_beam_zoomed(495:505)), db(beam_pattern_interpolated_fbst_zoomed(:,495:505)), 'Color',[0 1 0 0.5],'LineWidth',1);
+set(gca, 'XTick', []);
+exportgraphics(gcf, 'super_res_ula_beam_pattern.pdf', 'ContentType', 'vector');

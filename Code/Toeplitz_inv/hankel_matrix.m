@@ -1,0 +1,64 @@
+function a = hankel_matrix ( n, x )
+
+%*****************************************************************************80
+%
+%% hankel_matrix() returns a HANKEL matrix.
+%
+%  Formula:
+%
+%    A(I,J) = X(I+J-1)
+%
+%  Example:
+%
+%    N = 5, X = ( 1, 2, 3, 4, 5, 6, 7, 8, 9 )
+%
+%    1  2  3  4  5
+%    2  3  4  5  6
+%    3  4  5  6  7
+%    4  5  6  7  8
+%    5  6  7  8  9
+%
+%  Properties:
+%
+%    A is symmetric: A' = A.
+%
+%    Because A is symmetric, it is normal.
+%
+%    Because A is normal, it is diagonalizable.
+%
+%    A is a Hankel matrix: constant along anti-diagonals.
+%
+%    The family of matrices is nested as a function of N.
+%
+%    A is not diagonally dominant.
+%
+%  Licensing:
+%
+%    This code is distributed under the MIT license.
+%
+%  Modified:
+%
+%    10 October 2007
+%
+%  Author:
+%
+%    John Burkardt
+%
+%  Input:
+%
+%    integer N, the order of A.
+%
+%    real X(2*N-1), the vector that defines A.
+%
+%  Output:
+%
+%    real A(N,N), the matrix.
+%
+  a = zeros ( n, n );
+
+  for j = 1 : n
+    a(1:n,j) = x(j:j+n-1);
+  end
+
+  return
+end

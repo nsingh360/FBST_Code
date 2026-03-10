@@ -1,0 +1,145 @@
+% N_lst = 5000:500:10000; % Toeplitz matrix is NxN
+% 
+% 
+% trials = 5;
+% time_multiplication = zeros(trials, length(N_lst));
+% time_fft = zeros(trials, length(N_lst));
+% 
+% for nn = 1:length(N_lst)
+%     N = N_lst(nn);
+%     for ii = 1:trials
+%         c = rand(N,1);
+%         r = rand(1,N);
+% 
+%         T = toeplitz(c,r);
+%         x = rand(N,1);
+%         t_mult = tic;
+%         temp = T*x;
+%         time_multiplication(ii,nn) = toc(t_mult);
+% 
+%         t_fft = tic;
+%         p = [c; 0; flipud(conj(r(2:end)'))];
+%         y = ifft(fft(p) .* fft([x; zeros(N, 1)]));
+%         y = y(1:N);
+%         time_fft(ii,nn) = toc(t_fft);
+% 
+%     end
+% end
+
+%% Toeplitz inversion using generator function
+
+clear
+clc
+close all
+
+%% set random number generator seed
+seed = randi([1,10000]);
+rng(seed)
+
+B = 2^7; % no. of beams
+M = 2^7; % array size
+N = 2^6; % no. of samples
+L = ceil(N); % no. of samples in frequency is 2*L
+MN = M*N;
+
+norm_fac = 2*L*M; % normalizing factor for topelitz matrix
+NMSE_INV = zeros(B,1);
+
+Theta = zeros(B,1);
+idx = 1;%randi(B,1);
+for i=1:B
+    Theta(i) = asin((i-1)/B);
+end
+
+for theta_idx = B-1:B
+
+ N = 
+
+fc = 20e9;  % center frequency
+c = physconst('LightSpeed');
+lambda = c/fc; % wavelngth
+W = 5e9; % bandwidth
+fs = 2.5*W; % sampling frequency
+Time = 1/fs;
+theta = Theta(theta_idx);
+m = [(-M/2+1/2):(M/2-1/2)]';
+x_pos = m*lambda/2; % sensor positions
+u_s = sin(theta); % normal vector for determining delays
+
+n = [0:N-1]/fs; % temporal sample vectors
+tau = x_pos*u_s/c; % relative delays to phase center
+t_array = n-tau; % delays across array and time
+t = t_array(:); %
+%% construct the toeplitz matrix
+delta = 1e-1;
+A_eplitz = zeros(2*L,2*L);
+for ll=1:2*L
+    for kk=1:2*L
+        f_l = (1/(2*Time*L))*(ll-1-L);
+        f_k = (1/(2*Time*L))*(kk-1-L);
+        A_eplitz(ll,kk) = sum(exp(1i*2*pi*(f_k - f_l)*t));
+    end
+end
+
+N = 2*L;
+% A_eplitz = rand(N,N);
+T = A_eplitz + delta*eye(N);
+
+cc = T(:,1);
+r = T(1,:);
+% T = toeplitz(c,r);
+T_inv = inv(T);
+
+e1 = zeros(N,1);
+e1(1) = 1;
+alpha = 0;
+v_alpha = zeros(N,1);
+v_alpha(2:N) = -1*flip(T(1,2:N));
+v_alpha(1) = alpha;
+
+b = [e1 v_alpha];
+gen_vecs = T\b;
+
+u = gen_vecs(:,1);
+v = gen_vecs(:,2);
+
+u_c1 = u;
+u_r1 = zeros(N,1);
+u_r1(1) = u(1);
+X1 = toeplitz(u_c1, u_r1);
+
+v_r1 = ones(N,1);
+v_r1(2:end) = flip(v(2:N));
+v_c1 = zeros(N,1);
+v_c1(1) = v_r1(1);
+X2 = toeplitz(v_c1, v_r1);
+
+v_c1 = v;
+v_r1 = zeros(N,1);
+v_r1(1) = v(1);
+X3 = toeplitz(v_c1, v_r1);
+
+u_r1 = zeros(N,1);
+u_r1(2:end) = flip(u(2:N));
+u_c1 = zeros(N,1);
+u_c1(1) = u_r1(1);
+X4 = toeplitz(u_c1, u_r1);
+
+T_inv3 = X1*X2 - X3*X4;
+
+%% funcion call
+toeplitz_vec = zeros(2*N-1,1);
+toeplitz_vec(1:N) = flip(cc);
+toeplitz_vec(N+1:2*N-1) = r(2:N);
+
+T_inv2 = toeplitz_inverse(N,toeplitz_vec);
+
+[X1,X2,X3,X4,b11,b12,b21,b22,l1_,r1_,l2_,r2_] = eval_canonical_vecs(T);
+% 
+% u  =b11(2:end);
+% v = b22(2:end);
+
+T_inv4 = X1*X2 - X3*X4;
+NMSE_INV(theta_idx) = norm(T_inv4 - T_inv);
+
+end

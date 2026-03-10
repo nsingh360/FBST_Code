@@ -1,0 +1,237 @@
+clear
+clc
+close all
+
+
+%% NOTE: Setting exp_fac>1 for NUFFT requires lambda=c/(fc+Omega+eta) for a small eta to avoid spatial aliasing.
+
+%% set random number generator seed
+seed = randi([1,10000]);
+rng(seed)
+
+B = 2^7; % no. of beams
+M = 2^7; % array size
+N = 2^6; % no. of samples
+L = ceil(N); % no. of samples in frequency is 2*L
+exp_fac = 1; % factor to include freqs slightly out of band;
+MN = M*N;
+
+M_g = M/2; % divide array into two with one aperture gap
+
+
+fc = 20e9;  % center frequency
+Ws = 5e9; % to prevent spacial aliasing
+c = physconst('LightSpeed');
+lambda = c/(fc+exp_fac*Ws); % wavelngth
+eta = lambda/(2*c);
+W = 5e9; % bandwidth
+fs = 2*W; % sampling frequency
+T = 1/fs;
+theta = pi/3;%Theta(idx);
+
+m_1 = [(-M_g/2+1/2):(M_g/2-1/2)]' - M;
+
+m = [(-M/2+1/2):(M/2-1/2)]';
+x_pos = m*lambda/2; % sensor positions
+u_s = sin(theta); % normal vector for determining delays
+
+fc_tilde = (fc+exp_fac*Ws); % adjustment for spatial aliasing
+fc_norm = fc/fc_tilde;
+
+%% Signal specs that do not need to be redifined in loop
+n_sinusoids = 100; % number of sinusoids in signal
+n = [0:N-1]/fs; % temporal sample vectors
+tau = x_pos*u_s/c; % relative delays to phase center
+t_array = n-tau; % delays across array and time
+t = t_array(:); %
+T_aperture = max(t)-min(t);% temporal aperture of the array
+demod_phase = repmat(exp(-1i*2*pi*(fc)*tau),N,1);
+mod_phase = exp(1i*2*pi*(fc)*tau);
+% demod_phase = repmat(demod_phase,N,1);
+taps = 8;
+edge_lim = taps + ceil(fs*(max(tau)-min(tau))/2);% clip signal to account for edge distortion
+comp_idxs = (edge_lim+1):(N-edge_lim-1); % comparison indicies
+
+taps2 = 16;
+edge_lim2 = taps2 + ceil(fs*(max(tau)-min(tau))/2);% clip signal to account for edge distortion
+comp_idxs2 = (edge_lim2+1):(N-edge_lim2-1); % comparison indicies
+
+%% construct the toeplitz matrix
+delta = 1e-5;
+freq_samples = exp_fac/(2*T*L)*linspace(-L,L,2*L+1);
+freq_samples2 = 1/(2*T*L)*linspace(-L,L,2*L+1);
+F_basis = exp(1i*2*pi*t*freq_samples).*demod_phase;
+% for ll=1:2*L
+%     for kk=1:2*L
+%         f_l = (1/(2*T*L))*(ll-1-L);
+%         f_k = (1/(2*T*L))*(kk-1-L);
+%         A_eplitz(ll,kk) = sum(exp(1i*2*pi*(f_k - f_l)*t));
+%     end
+% end
+A_eplitz = F_basis'*F_basis;
+toeplitz_inv = inv(A_eplitz + (delta)*eye(2*L+1));
+
+%% slepian function for signal generation
+K = ceil(2*W*T_aperture)+10;% subspace dimension
+[V_u,Lambda] = dpss(MN+1,W*T_aperture,K); % firt K uniformly sampled PSWF's
+t_u = [0:(MN)]'; % uniform sampling points over the interval
+t_nu = [M*N*(t-min(t(:)))/T_aperture]; % non-uniform sample points, scaled to match interval
+V_nu = interp1(t_u,V_u,t_nu,'pchip',0); % non-uniform
+% Lambda = svd(V_nu);
+
+t_nyq = [0:N-1]/fs; % nyquist samples for testing
+V_nyq = interp1(t_u,V_u,MN*(t_nyq-min(t))/T_aperture,'pchip',0); % interpolate to nyquist
+psi = exp(1i*2*pi*t_nyq'*freq_samples);
+
+trials = 2;
+SNRs = -30:6:30;
+SNR_ttd = zeros(trials, length(SNRs));
+SNR_fbst = zeros(trials, length(SNRs));
+
+
+for ii = 1:trials
+    for jj = 1:length(SNRs)
+
+        SNR_dB = SNRs(jj); % signal to noise ratio
+        a = (randn(n_sinusoids,K) + 1i*randn(n_sinusoids,K))/sqrt(2).*(Lambda.'); % sinusoid amplitudes
+        % f = linspace(-W,W,n_sinusoids); % sinusoid frequencies
+        s = slepian_sig_gen(V_nu,a,n_sinusoids,t);
+        sigma = (norm(s)/sqrt(MN))*10^(-SNR_dB/20);
+        noise = sigma*(randn(MN,1)+1i*randn(MN,1))/sqrt(2);
+        SNR_check = db(norm(s)/norm(noise));
+        fprintf('Trial: %d, Set SNR: %.2f, Measured SNR: %.2f\n',ii,SNR_dB,SNR_check)
+
+        s_demod = s.*demod_phase;
+
+        y = s_demod + noise;
+        y = reshape(y, [M,N]);
+
+        %% beamforming inverse problem
+        alpha_ls = toeplitz_inv*F_basis'*y(:);
+        y_nyq_ls = psi*alpha_ls;
+
+        s_nyq = slepian_sig_gen(V_nyq,a,n_sinusoids,t_nyq');
+
+        y_filter_ttd32 = TTD_Beamformer((y.*mod_phase).',-tau, fs, @Psi_sinc, 'R',taps2).';
+        y_bf_ttd32 = sum(y_filter_ttd32(:,1:N),1)/M;
+        % y_comp = y_bf(comp_idxs).';
+        s_nyq_2 = zeros(N,1);
+        s_nyq_2(1:N-1) = s_nyq(2:end);
+
+        SNR_ttd(ii,jj) = norm(s_nyq_2(comp_idxs))/norm(y_bf_ttd32(comp_idxs).' - s_nyq_2(comp_idxs));
+        SNR_fbst(ii,jj) = norm(s_nyq)/norm(s_nyq - y_nyq_ls);
+        % SNR_slepian_filt32(ii,jj) = norm(s_nyq(comp_idxs))/norm(s_nyq(comp_idxs) - y_comp);
+
+    end
+end
+
+
+figure(1)
+plot(SNRs,SNRs + db(M)/2,'LineWidth',1)
+hold on
+grid on
+plot(SNRs,db(mean(SNR_fbst)),'-*','LineWidth',1)
+hold on
+grid on
+plot(SNRs, db(mean(SNR_ttd)),'-^','LineWidth',1);
+xlabel('Nominal SNR (dB)','Interpreter','latex','FontSize',12)
+ylabel('Beamformed SNR (dB)','Interpreter','latex','FontSize',12)
+legend({'Ideal','FBST','TTD (R=32)'},'Location','northwest','Interpreter','latex','FontSize',12)
+
+
+%% params for beam pattern plot
+betas_no_null = inv(F_basis'*F_basis + 1e-5*eye(2*L+1))*(F_basis)';
+
+%% Interferer Specs
+theta_i = pi/180*20;
+u_i = sin(theta_i); % normal vector for determining delays
+tau_i = x_pos*u_i/c;
+t_i_array = n - tau_i;
+t_i = t_i_array(:);
+T_aperture_i = max(t_i) - min(t_i);
+demod_phase_i  = repmat(exp(-1i*2*pi*fc*(tau_i)),N,1);%repmat(exp(-1i*2*pi*fc*tau_i),N,1); % modulation vector after pre-steering
+F_interference = exp(1i*2*pi*t_i*freq_samples).*demod_phase_i;
+% F_interference2 = F_interference2.*demod_phase_i2;
+beta_null = inv(F_basis'*F_basis + 1e-8*eye(2*L+1))*F_basis'*(eye(MN,MN) - F_interference*inv(F_interference'*F_interference + 1e-8*eye(2*L+1))*F_interference');
+W = 5e9; % bandwidth
+f_beam = linspace(fc-0.5*W,fc+0.5*W,2);
+theta_beam = linspace(-pi/2,pi/2,1000);
+e_mod = exp(-1i*2*pi*fc*t);
+
+beam_pattern_fbst = zeros(length(f_beam),length(theta_beam));
+beam_pattern_null = zeros(length(f_beam),length(theta_beam));
+beam_pattern_ds = zeros(length(f_beam),length(theta_beam));
+
+
+for ii = 1:length(f_beam)
+    for jj = 1:length(theta_beam)
+        fprintf('Frequency: %.2f, Angle: %.2f\n',f_beam(ii),theta_beam(jj));
+        tau_jj = x_pos*sin(theta_beam(jj))/c;
+        t_jj = n-tau_jj;
+        t_jj =t_jj(:);
+        demod_phase_jj = repmat(exp(-1i*2*pi*fc*tau_jj),N,1);%exp(1i*2*pi*fc*t);
+        e_jj = exp(1i*2*pi*(f_beam(ii)-fc)*t_jj).*demod_phase_jj;
+
+        %% fast ds beam pattern
+        y = reshape(e_jj.*conj(demod_phase),[M,N,1]);
+
+        y_filter_ttd = TTD_Beamformer(y.',-tau, fs, @Psi_sinc, 'R',taps).';
+        y_bf_ttd = sum(y_filter_ttd(:,1:N),1)/M;
+
+        % beam_pattern_fast_ds(ii,jj) = norm(v_pred(comp_idxs2))/sqrt(length(comp_idxs2));
+        beam_pattern_ds(ii,jj) = norm(y_bf_ttd(comp_idxs))/sqrt(length(comp_idxs));
+
+        beam_pattern_fbst(ii,jj) = norm(psi*(betas_no_null*e_jj))/sqrt(length(t_nyq));
+        beam_pattern_null(ii,jj) = norm(psi*(beta_null*e_jj))/sqrt(length(t_nyq));
+    end
+end
+
+figure(2)
+p0 = plot(rad2deg(theta_beam),zeros(length(theta_beam),1),'r--');
+hold on
+grid on
+p3 = plot(rad2deg(theta_beam),db(beam_pattern_ds),'Color',[0 1 0 1]);
+xlabel('$\theta$ (degrees)','Interpreter','latex','FontSize',12)
+ylabel('Response(dB)','Interpreter','latex','FontSize',12)
+
+figure(3)
+p0 = plot(rad2deg(theta_beam),zeros(length(theta_beam),1),'r--');
+hold on
+grid on
+p1 = plot(rad2deg(theta_beam),db(beam_pattern_fbst),'Color',[1 0 0 1]);
+xlabel('$\theta$ (degrees)','Interpreter','latex','FontSize',12)
+ylabel('Response(dB)','Interpreter','latex','FontSize',12)
+
+figure(4)
+p0 = plot(rad2deg(theta_beam),zeros(length(theta_beam),1),'r--');
+hold on
+grid on
+p1 = plot(rad2deg(theta_beam),db(beam_pattern_null),'Color',[1 0 0 1]);
+xlabel('$\theta$ (degrees)','Interpreter','latex','FontSize',12)
+ylabel('Response(dB)','Interpreter','latex','FontSize',12)
+
+
+
+%% supporting functions
+function [X] = sig_gen(a,f,n_sinusoids,t)
+X = zeros(size(t));
+for ii = 1:n_sinusoids % For each antenna
+    sig = (a(ii)*exp(1i*2*pi*(f(ii))*(t)));
+    X = X + sig;
+end
+end
+
+function y = Psi_b3(z)
+y = (z.^3/6 + z.^2 + 2*z + 4/3).*(-2<=z).*(z<-1);
+y = y + (-z.^3/2-z.^2 + 2/3).*(-1<=z).*(z<0);
+y = y + (z.^3/2 - z.^2 + 2/3).*(0<=z).*(z<1);
+y = y + (-z.^3/6 + z.^2 - 2*z + 4/3).*(1<=z).*(z<2);
+end
+
+function y = Psi_sinc(z)
+y = sinc(z);
+end
+
+function [X] = slepian_sig_gen(V,a,n_slepians,t)
+X = sum(a*V.').';
+end

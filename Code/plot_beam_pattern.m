@@ -1,0 +1,64 @@
+load('beam_pattern_combined_data.mat');
+load('sub_band_beampattern_data.mat');
+
+B = 2^7;
+Theta_fbst = zeros(2*B+1,1);
+idx = 240;%randi(B,1);
+for i=1:2*B+1
+    Theta_fbst(i) = asin((i-1-B)/B);
+end
+theta = Theta_fbst(idx);%Theta(idx); 
+
+theta_beam = linspace(-pi/2,pi/2,300);
+theta_beam_zoomed = linspace(theta - 0.05,theta + 0.05, 50);
+
+figure(1)
+p0 = plot(rad2deg(theta_beam),zeros(length(theta_beam),1),'r--');
+hold on
+grid on
+p2 = plot(rad2deg(theta_beam),db(beam_pattern_fast_ds),'Color',[0 0 1 0.6]);
+hold on
+grid on
+p3 = plot(rad2deg(theta_beam),db(beam_pattern_ds),'Color',[0 1 0 0.4]);
+hold on
+grid on
+p4 = plot(rad2deg(theta_beam),db(beam_pattern_subBand),'Color',[1 0 1 0.3]);
+hold on
+grid on
+p1 = plot(rad2deg(theta_beam),db(beam_pattern_fbst),'Color',[0 0 0 0.5]);
+xlabel('$\theta$ (degrees)','Interpreter','latex','FontSize',12)
+ylabel('Response(dB)','Interpreter','latex','FontSize',12)
+
+% legendHandles = [repmat(p0,50,1), p1, p2];
+% legendLabels = {'Distortionless response','No Nulling', 'Projection Nulling'};
+% lgd = legend(legendHandles, legendLabels);
+% 
+% legendChildren = findobj(lgd, 'Type', 'Line');
+% set(legendChildren, 'LineWidth', 2); % Set solid lines for legend
+% Dummy plots for solid legend entries with different styles
+legend_p0 = plot(-1, -1, 'r--', 'LineWidth', 2);  % Solid red
+legend_p1 = plot(-1, -1, 'k-', 'LineWidth', 2); % Dashed blue
+legend_p2 = plot(-1, -1, 'b-', 'LineWidth', 2); % Dashed blue
+legend_p3 = plot(-1, -1, 'g-', 'LineWidth', 2); % Dashed blue
+legend_p4 = plot(-1, -1, '-', 'LineWidth', 2,'Color',[1 0 1 1]); % Dashed blue
+
+% Legend
+legend([legend_p0, legend_p1, legend_p2, legend_p3, legend_p4], {'Distortionless response', 'FBST', 'FDS (R=16)', 'DS (R=16)', 'Sub-Band Processing'},'location','northwest','Interpreter','latex','FontSize',12);
+% legend({'Distortionless response','No Nulling', 'Projection Nulling'},'location','northwest','Interpreter','latex')
+xlim([-90,90])
+ylim([-45,.5])
+
+% First Inset
+ax1 = axes('Position', [0.55, 0.7, 0.2, 0.2]); % [x, y, width, height]
+box on;
+plot(rad2deg(theta_beam_zoomed(15:end-15)),zeros(length(theta_beam_zoomed(15:end-15)),1),'r--');
+hold on;
+plot(rad2deg(theta_beam_zoomed(15:end-15)), db(beam_pattern_fbst_zoomed(1:10,15:end-15)), 'Color',[0 0 0 1], 'LineWidth', 1);
+hold on
+plot(rad2deg(theta_beam_zoomed(15:end-15)), db(beam_pattern_subBand_zoomed(1:5,15:end-15)), 'Color',[1 0 1 0.7],'LineWidth',1);
+hold on
+plot(rad2deg(theta_beam_zoomed(15:end-15)), db(beam_pattern_fast_ds_zoomed(1:5,15:end-15)), 'Color',[0 0 1 0.45],'LineWidth',1);
+y1 = ylim;
+ylim([y1(1), 1.5]);
+set(gca, 'YTick', []);
+exportgraphics(gcf, 'ula_beam_pattern_combined_subband.pdf', 'ContentType', 'vector');

@@ -1,0 +1,145 @@
+clear
+clc
+close all
+
+%% set random number generator seed
+seed = randi([1,10000]);
+rng(seed)
+
+%% array spatial and temporal specificiations
+M = 2^3; % array size
+N = 2^5; % temporal samples
+MN = M*N;
+fc = 20e9;  % center frequency
+c = physconst('LightSpeed');
+W = 5e9; % bandwidth
+lambda = c/(fc + W); % wavelngth
+fs = 2*W; % sampling frequency
+phi = pi/4; % azimuth
+theta = pi/3; % elevation
+m = [(-M/2+1/2):(M/2-1/2)]';
+x_pos = m*lambda/2; % sensor positions
+u_s = sin(theta); % normal vector for determining delays
+
+
+%% Signal specs that do not need to be redifined in loop
+n_sinusoids = 100; % number of sinusoids in signal
+n = [0:N-1]/fs; % temporal sample vectors
+tau = x_pos*u_s/c; % relative delays to phase center
+t_array = n - tau; % delays across array and time
+t = t_array(:); %
+T = max(t)-min(t);% temporal aperture of the array
+
+%% Interferer specs that do not need to be redfined in loop
+phi_i = -pi/4;
+theta_i = pi/10;
+u_i = sin(theta_i); % normal vector for determining delays
+tau_i = x_pos*u_i/c;
+t_i_array = n - tau_i;
+t_i = t_i_array(:);
+T_i = max(t_i) - min(t_i);
+e_i  = repmat(exp(1i*2*pi*fc*(-tau_i+tau)),1,N);
+
+%% MVDR filter design
+Rs = sinc(2*W*(tau-tau'))/trace(sinc(2*W*(tau-tau')));
+Ri = exp(-1i*2*pi*fc*((-tau_i+tau)-(-tau_i+tau)')).*sinc(2*W*(tau_i-tau_i'))/trace(exp(1i*2*pi*fc*((-tau_i+tau)-(-tau_i+tau)')).*sinc(2*W*(tau_i-tau_i')));
+Rn = eye(length(tau));
+
+%% Slepian basis generation
+T_1 = max(tau)-min(tau);
+L = 1;
+K =ceil(2*W*T_1)+L;
+V_nu = dpss(M,W*T_1,K);
+
+SIR_dB = -30;
+SNR_dB = 0;
+sigma_n = (1/sqrt(M))*10^(-SNR_dB/20);
+sigma_i = 10^(-SIR_dB/20);
+Rt = Rs + Ri*(sigma_i^2) + Rn*(sigma_n^2);
+Rt_inv = Rt^-1;
+phi = ((V_nu'*Rt_inv*V_nu)^(-1))*(V_nu'*Rt_inv);
+
+%% Filter generation
+R = 16;
+edge_lim = R + ceil(fs*(max(tau)-min(tau))/2);% clip signal to account for edge distortion
+comp_idxs = (edge_lim+1):(N-edge_lim-1); % comparison indicies
+
+
+N_filter = N+2*R+1;
+wrapN = @(x, n) (1 + mod(x-1, n));
+[fb] = Kernel_Filter_Gen(fs, @Psi_sinc,'R',R);
+[h, h_idx] = fb.Filter_Gen(-tau);
+h = squeeze(h);
+h_idx = squeeze(h_idx);
+filter_idx = [min(h_idx(:)):max(h_idx(:))];
+
+H = zeros(M,max( h_idx(:) - min(h_idx(:))+1));
+for ii=1:M
+    H(ii,h_idx(ii,:) - min(h_idx(:))+1) = h(ii,:);
+end
+
+H_buffer = zeros(N_filter,M);
+for ii=1:M
+    H_buffer(wrapN(filter_idx,N_filter),ii) = H(ii,:);
+end
+
+
+
+tap_lim = size(H,2);
+h = H(:)/M;
+t_tap = ones(M,1)*[0:tap_lim-1]/fs;
+
+%% compute beampattern
+
+f_beam = linspace(-W,1*W,10)*.5;
+theta_beam = linspace(-pi/2,pi/2,2000);
+beam_pattern = zeros(length(f_beam),length(theta_beam));
+e_tau = repmat(exp(1i*2*pi*(fc)*(tau)),tap_lim,1);
+
+
+e_mod_tau = exp(1i*2*pi*fc*([0:tap_lim-1]/fs-tau));
+e_mod_tau = e_mod_tau(:);
+
+for ii = 1:length(f_beam)
+    for jj = 1:length(theta_beam)
+        tau_jj = -x_pos*(sin(theta_beam(jj)))/c;
+        t_jj = (t_tap-tau_jj);
+        t_jj = t_jj(:);
+
+        e_jj = reshape(exp(1i*2*pi*(fc + f_beam(ii))*t_jj).*e_mod_tau,M,tap_lim);
+        e_le_jj = V_nu*phi*e_jj;
+        beam_pattern(ii,jj) = (abs(h'*e_le_jj(:)));%norm(e_le_jj,'fro');%%abs((e_jj).'*h);%/(norm(e_jj)*norm(h_vec));
+    end
+end
+
+figure(1)
+plot(rad2deg(theta_beam),zeros(length(theta_beam),1),'r--')
+hold on
+plot(rad2deg(theta_beam),db(beam_pattern),'k')
+grid on
+xlabel('$\theta$ (degrees)','Interpreter','latex')
+ylabel('Response(dB)','Interpreter','latex')
+legend({'Distortionless response'},'location','northwest','Interpreter','latex')
+xlim([-90,90])
+ylim([-45,.5])
+% saveas(gca,'figs/le_mvdr_ula_beampattern.png')
+
+%% supporting functions
+function [X] = sig_gen(a,f,n_sinusoids,t)
+X = zeros(size(t));
+for ii = 1:n_sinusoids % For each antenna
+    sig = (a(ii)*exp(1i*2*pi*f(ii)*(t)));
+    X = X + sig;
+end
+end
+
+function y = Psi_b3(z)
+y = (z.^3/6 + z.^2 + 2*z + 4/3).*(-2<=z).*(z<-1);
+y = y + (-z.^3/2-z.^2 + 2/3).*(-1<=z).*(z<0);
+y = y + (z.^3/2 - z.^2 + 2/3).*(0<=z).*(z<1);
+y = y + (-z.^3/6 + z.^2 - 2*z + 4/3).*(1<=z).*(z<2);
+end
+
+function y = Psi_sinc(z)
+y = sinc(z);
+end
